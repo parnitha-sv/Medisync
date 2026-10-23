@@ -4,33 +4,66 @@ import "./App.css";
 
 const API_URL = "http://localhost:5000/api";
 
-const initialPatients = [
-  { id: "p1", name: "Asha Kumar", email: "asha@gmail.com" },
-  { id: "p2", name: "Sunitha Rao", email: "sunitha@gmail.com" },
-  { id: "p3", name: "Shreya Sharma", email: "shreya08@gmail.com" },
-];
-
-const initialPrescriptions = [
-  {
-    id: "rx1",
-    patientId: "p1",
-    patientName: "Asha Kumar",
-    medication: "Prescription awaiting doctor entry",
-    dosage: "—",
-    frequency: "—",
-    instructions: "Your prescriptions will appear here when added by your doctor.",
-    startDate: "",
-    endDate: "",
-    status: "Active",
-  },
-];
-
 function getSavedUser() {
   try {
     return JSON.parse(localStorage.getItem("medisync_user") || "null");
   } catch {
     return null;
   }
+}
+
+function getToken() {
+  return localStorage.getItem("medisync_token");
+}
+
+function mapPrescription(row, patients = []) {
+  const patient = patients.find(
+    (item) => String(item.id) === String(row.patientId)
+  );
+
+  return {
+    ...row,
+    id: String(row.id),
+    patientId: String(row.patientId),
+    patientName: patient?.name || row.patientName || "Patient",
+    medication: row.medication || row.medication_name || "",
+    dosage: row.dosage || "",
+    frequency: row.frequency || "",
+    instructions: row.instructions || "",
+    startDate: row.startDate
+      ? String(row.startDate).slice(0, 10)
+      : "",
+    endDate: row.endDate ? String(row.endDate).slice(0, 10) : "",
+    status: row.status || "Active",
+  };
+}
+
+async function apiRequest(path, options = {}) {
+  const token = getToken();
+
+  const response = await fetch(`${API_URL}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (response.status === 401) {
+    localStorage.removeItem("medisync_token");
+    localStorage.removeItem("medisync_user");
+    window.location.reload();
+    throw new Error("Your session expired. Please sign in again.");
+  }
+
+  if (!response.ok) {
+    throw new Error(data.message || "The request could not be completed.");
+  }
+
+  return data;
 }
 
 function App() {
@@ -45,28 +78,107 @@ function App() {
   const [authMessage, setAuthMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const [patients] = useState(initialPatients);
-  const [selectedPatientId, setSelectedPatientId] = useState("p1");
-  const [prescriptions, setPrescriptions] = useState(initialPrescriptions);
+  const [patients, setPatients] = useState([]);
+  const [selectedPatientId, setSelectedPatientId] = useState("");
+  const [prescriptions, setPrescriptions] = useState([]);
   const [showPrescriptionForm, setShowPrescriptionForm] = useState(false);
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
 
   const [prescriptionForm, setPrescriptionForm] = useState({
     medication: "",
     dosage: "",
     frequency: "",
+    frequencyTimes: [],
     instructions: "",
     startDate: "",
     endDate: "",
   });
 
-  useEffect(() => {
-    const savedUser = getSavedUser();
-    if (savedUser) setUser(savedUser);
-  }, []);
-
   const isDoctor = user?.role?.toLowerCase() === "doctor";
+
+  useEffect(() => {
+    if (user && !getToken()) {
+      localStorage.removeItem("medisync_user");
+      setUser(null);
+    }
+  }, [user]);
+
+  async function loadWorkspace(currentUser = user) {
+    if (!currentUser || !getToken()) return;
+
+    setWorkspaceLoading(true);
+    setNotice("");
+
+    try {
+      if (currentUser.role.toLowerCase() === "doctor") {
+        const patientData = await apiRequest("/doctor/patients");
+        const loadedPatients = (patientData.patients || []).map((patient) => ({
+          ...patient,
+          id: String(patient.id),
+        }));
+
+        setPatients(loadedPatients);
+
+        setSelectedPatientId((previous) => {
+          if (loadedPatients.some((p) => p.id === previous)) return previous;
+          return loadedPatients[0]?.id || "";
+        });
+
+        if (loadedPatients.length === 0) {
+          setPrescriptions([]);
+          setNotice(
+            "No patients are assigned to your account yet. Ask an administrator to link a patient."
+          );
+        }
+      } else {
+        const data = await apiRequest("/prescriptions");
+        setPrescriptions(
+          (data.prescriptions || []).map((row) =>
+            mapPrescription(row)
+          )
+        );
+      }
+    } catch (error) {
+      setNotice(error.message || "Unable to load your dashboard.");
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (user && getToken()) {
+      loadWorkspace(user);
+    }
+    // Load data when the logged-in account changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, user?.role]);
+
+  useEffect(() => {
+    async function loadDoctorPrescriptions() {
+      if (!user || !isDoctor || !selectedPatientId || !getToken()) {
+        if (isDoctor) setPrescriptions([]);
+        return;
+      }
+
+      try {
+        const data = await apiRequest(
+          `/prescriptions?patientId=${encodeURIComponent(selectedPatientId)}`
+        );
+
+        setPrescriptions(
+          (data.prescriptions || []).map((row) =>
+            mapPrescription(row, patients)
+          )
+        );
+      } catch (error) {
+        setNotice(error.message || "Unable to load prescriptions.");
+      }
+    }
+
+    loadDoctorPrescriptions();
+  }, [user?.id, user?.role, isDoctor, selectedPatientId, patients]);
 
   async function handleAuth(event) {
     event.preventDefault();
@@ -83,6 +195,11 @@ function App() {
       return;
     }
 
+    if (mode === "register" && password.length < 8) {
+      setAuthError("Password must be at least 8 characters.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -91,17 +208,8 @@ function App() {
 
       const payload =
         mode === "register"
-          ? {
-              name: name.trim(),
-              email: email.trim(),
-              password,
-              role,
-            }
-          : {
-              email: email.trim(),
-              password,
-              role,
-            };
+          ? { name: name.trim(), email: email.trim(), password, role }
+          : { email: email.trim(), password, role };
 
       const response = await fetch(`${API_URL}${endpoint}`, {
         method: "POST",
@@ -112,31 +220,37 @@ function App() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(data.message || data.error || "Unable to continue. Please check your details.");
+        throw new Error(
+          data.message || "Unable to continue. Please check your details."
+        );
       }
 
       if (mode === "register") {
-        setAuthMessage("Account created successfully. You can now log in.");
+        setAuthMessage("Account created successfully. You can now sign in.");
         setMode("login");
         setPassword("");
         setConfirmPassword("");
       } else {
         const loggedInUser = {
-          id: data.user?.id,
-          name: data.user?.name || data.user?.full_name || name || email.split("@")[0],
-          email: data.user?.email || email,
-          role: data.user?.role || role,
+          id: String(data.user.id),
+          name: data.user.name || data.user.full_name || email.split("@")[0],
+          email: data.user.email || email,
+          role: data.user.role || role,
         };
 
         localStorage.setItem("medisync_token", data.token);
         localStorage.setItem("medisync_user", JSON.stringify(loggedInUser));
+
+        setPatients([]);
+        setPrescriptions([]);
+        setSelectedPatientId("");
         setUser(loggedInUser);
         setNotice("");
       }
     } catch (error) {
       setAuthError(
         error.message === "Failed to fetch"
-          ? "Cannot connect to the backend. Make sure your backend server is running."
+          ? "Cannot connect to the backend. Make sure the server is running on port 5000."
           : error.message
       );
     } finally {
@@ -148,22 +262,34 @@ function App() {
     localStorage.removeItem("medisync_token");
     localStorage.removeItem("medisync_user");
     setUser(null);
+    setPatients([]);
+    setPrescriptions([]);
+    setSelectedPatientId("");
     setMode("login");
+    setRole("patient");
+    setName("");
+    setEmail("");
     setPassword("");
     setConfirmPassword("");
     setNotice("");
+    setShowPrescriptionForm(false);
   }
 
   function updatePrescriptionField(event) {
     const { name: field, value } = event.target;
-    setPrescriptionForm((current) => ({ ...current, [field]: value }));
+
+    setPrescriptionForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
   }
 
-  function addPrescription(event) {
+  async function addPrescription(event) {
     event.preventDefault();
+    setNotice("");
 
     if (!selectedPatientId) {
-      setNotice("Please select a patient.");
+      setNotice("Please select an assigned patient.");
       return;
     }
 
@@ -171,37 +297,99 @@ function App() {
       (patient) => patient.id === selectedPatientId
     );
 
-    if (!prescriptionForm.medication.trim() || !prescriptionForm.dosage.trim()) {
-      setNotice("Medication name and dosage are required.");
+    if (!selectedPatient) {
+      setNotice("The selected patient was not found.");
       return;
     }
 
-    const newPrescription = {
-      ...prescriptionForm,
-      id: `rx-${Date.now()}`,
-      patientId: selectedPatientId,
-      patientName: selectedPatient?.name || "Patient",
-      status: "Active",
+    const {
+      medication,
+      dosage,
+      frequency,
+      frequencyTimes,
+      instructions,
+      startDate,
+      endDate,
+    } = prescriptionForm;
+
+    if (!medication.trim() || !dosage.trim() || !frequency) {
+      setNotice("Medication name, dosage and frequency are required.");
+      return;
+    }
+
+    const frequencyLimits = {
+      "Once a day": 1,
+      "Twice a day": 2,
+      "Three times a day": 3,
+      "Four times a day": 4,
     };
 
-    setPrescriptions((current) => [newPrescription, ...current]);
-    setPrescriptionForm({
-      medication: "",
-      dosage: "",
-      frequency: "",
-      instructions: "",
-      startDate: "",
-      endDate: "",
-    });
-    setShowPrescriptionForm(false);
-    setNotice("Prescription added to the current session.");
+    if (!Array.isArray(frequencyTimes) ||
+        frequencyTimes.length !== frequencyLimits[frequency]) {
+      setNotice(
+        `Select exactly ${frequencyLimits[frequency]} scheduled time(s) for ${frequency.toLowerCase()}.`
+      );
+      return;
+    }
+
+    if (
+      startDate &&
+      endDate &&
+      endDate < startDate
+    ) {
+      setNotice("End date cannot be before start date.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const data = await apiRequest("/prescriptions", {
+        method: "POST",
+        body: JSON.stringify({
+          patientId: Number(selectedPatientId),
+          medication: medication.trim(),
+          dosage: dosage.trim(),
+          frequency,
+          frequencyTimes,
+          instructions: instructions.trim(),
+          startDate,
+          endDate,
+        }),
+      });
+
+      const savedPrescription = mapPrescription(
+        data.prescription,
+        patients
+      );
+
+      setPrescriptions((current) => [
+        savedPrescription,
+        ...current.filter((item) => item.id !== savedPrescription.id),
+      ]);
+
+      setPrescriptionForm({
+        medication: "",
+        dosage: "",
+        frequency: "",
+        frequencyTimes: [],
+        instructions: "",
+        startDate: "",
+        endDate: "",
+      });
+
+      setShowPrescriptionForm(false);
+      setNotice("Prescription saved successfully to the database.");
+    } catch (error) {
+      setNotice(error.message || "Unable to save prescription.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   function changePrescriptionStatus(id, status) {
-    setPrescriptions((current) =>
-      current.map((prescription) =>
-        prescription.id === id ? { ...prescription, status } : prescription
-      )
+    setNotice(
+      "Status changes are not connected to the database yet. The saved status has not changed."
     );
   }
 
@@ -239,8 +427,14 @@ function App() {
               <span>MediSync</span>
             </div>
 
-            <span className="eyebrow">{mode === "login" ? "WELCOME BACK" : "GET STARTED"}</span>
-            <h2>{mode === "login" ? "Sign in to MediSync" : "Create your account"}</h2>
+            <span className="eyebrow">
+              {mode === "login" ? "WELCOME BACK" : "GET STARTED"}
+            </span>
+            <h2>
+              {mode === "login"
+                ? "Sign in to MediSync"
+                : "Create your account"}
+            </h2>
             <p className="muted">
               {mode === "login"
                 ? "Enter your details to access your workspace."
@@ -297,7 +491,9 @@ function App() {
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   placeholder="Enter your password"
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  autoComplete={
+                    mode === "login" ? "current-password" : "new-password"
+                  }
                   required
                 />
               </label>
@@ -330,7 +526,9 @@ function App() {
             </form>
 
             <p className="auth-switch">
-              {mode === "login" ? "New to MediSync?" : "Already have an account?"}{" "}
+              {mode === "login"
+                ? "New to MediSync?"
+                : "Already have an account?"}{" "}
               <button
                 type="button"
                 onClick={() => {
@@ -343,16 +541,14 @@ function App() {
               </button>
             </p>
 
-            <p className="security-note">🔒 Your health journey deserves care and privacy.</p>
+            <p className="security-note">
+              🔒 Your health journey deserves care and privacy.
+            </p>
           </div>
         </section>
       </div>
     );
   }
-
-  const patientPrescriptions = prescriptions.filter(
-    (prescription) => prescription.patientId === selectedPatientId
-  );
 
   const visiblePrescriptions = isDoctor
     ? prescriptions.filter((prescription) =>
@@ -360,11 +556,15 @@ function App() {
           .toLowerCase()
           .includes(search.toLowerCase())
       )
-    : prescriptions.filter((prescription) => prescription.patientId === "p1");
+    : prescriptions;
 
   const activeCount = visiblePrescriptions.filter(
     (prescription) => prescription.status === "Active"
   ).length;
+
+  const selectedPatient = patients.find(
+    (patient) => patient.id === selectedPatientId
+  );
 
   return (
     <div className="dashboard-layout">
@@ -375,18 +575,10 @@ function App() {
         </div>
 
         <div className="sidebar-label">WORKSPACE</div>
-        <div className="nav-item active">
-          <span>▦</span> Dashboard
-        </div>
-        <div className="nav-item">
-          <span>▤</span> Prescriptions
-        </div>
-        <div className="nav-item">
-          <span>◷</span> Medication schedule
-        </div>
-        <div className="nav-item">
-          <span>♡</span> Care coordination
-        </div>
+        <div className="nav-item active"><span>▦</span> Dashboard</div>
+        <div className="nav-item"><span>▤</span> Prescriptions</div>
+        <div className="nav-item"><span>◷</span> Medication schedule</div>
+        <div className="nav-item"><span>♡</span> Care coordination</div>
 
         <div className="sidebar-bottom">
           <div className="help-card">
@@ -423,7 +615,9 @@ function App() {
           <div className="welcome-row">
             <div>
               <span className="eyebrow">YOUR HEALTH, IN SYNC</span>
-              <h1>{isDoctor ? `Welcome, Dr. ${user.name}` : `Welcome, ${user.name}`}</h1>
+              <h1>
+                {isDoctor ? `Welcome, ${user.name}` : `Welcome, ${user.name}`}
+              </h1>
               <p>
                 {isDoctor
                   ? "Manage patient prescriptions and coordinate care."
@@ -438,6 +632,7 @@ function App() {
                   setShowPrescriptionForm((current) => !current);
                   setNotice("");
                 }}
+                disabled={patients.length === 0}
               >
                 <span>＋</span> Add prescription
               </button>
@@ -445,27 +640,44 @@ function App() {
           </div>
 
           {notice && (
-            <div className="alert success notice">
+            <div className="alert success notice" role="status">
               {notice}
               <button onClick={() => setNotice("")} aria-label="Dismiss">×</button>
             </div>
           )}
 
+          {workspaceLoading && (
+            <div className="alert success notice">Loading your records...</div>
+          )}
+
           <div className="stats-grid">
             <div className="stat-card">
               <div className="stat-icon lavender">▤</div>
-              <div><span>{isDoctor ? "Prescriptions entered" : "My prescriptions"}</span><strong>{visiblePrescriptions.length}</strong></div>
-              <span className="stat-caption">In this session</span>
+              <div>
+                <span>{isDoctor ? "Prescriptions entered" : "My prescriptions"}</span>
+                <strong>{visiblePrescriptions.length}</strong>
+              </div>
+              <span className="stat-caption">Saved records</span>
             </div>
+
             <div className="stat-card">
               <div className="stat-icon mint">✓</div>
-              <div><span>Active prescriptions</span><strong>{activeCount}</strong></div>
+              <div>
+                <span>Active prescriptions</span>
+                <strong>{activeCount}</strong>
+              </div>
               <span className="stat-caption">Currently active</span>
             </div>
+
             <div className="stat-card">
               <div className="stat-icon peach">{isDoctor ? "♙" : "♡"}</div>
-              <div><span>{isDoctor ? "Available patients" : "Care status"}</span><strong>{isDoctor ? patients.length : "On track"}</strong></div>
-              <span className="stat-caption">{isDoctor ? "Frontend preview" : "Stay connected to your doctor"}</span>
+              <div>
+                <span>{isDoctor ? "Assigned patients" : "Care status"}</span>
+                <strong>{isDoctor ? patients.length : "Connected"}</strong>
+              </div>
+              <span className="stat-caption">
+                {isDoctor ? "From your database" : "Your account is connected"}
+              </span>
             </div>
           </div>
 
@@ -474,9 +686,16 @@ function App() {
               <div className="section-heading">
                 <div>
                   <h2>New prescription</h2>
-                  <p>Enter the medication details for a patient.</p>
+                  <p>Enter the medication details for an assigned patient.</p>
                 </div>
-                <button className="icon-button" onClick={() => setShowPrescriptionForm(false)}>×</button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => setShowPrescriptionForm(false)}
+                  aria-label="Close prescription form"
+                >
+                  ×
+                </button>
               </div>
 
               <form onSubmit={addPrescription}>
@@ -488,6 +707,7 @@ function App() {
                       onChange={(event) => setSelectedPatientId(event.target.value)}
                       required
                     >
+                      <option value="">Select a patient</option>
                       {patients.map((patient) => (
                         <option key={patient.id} value={patient.id}>
                           {patient.name} — {patient.email}
@@ -506,75 +726,75 @@ function App() {
                       required
                     />
                   </label>
+
                   <label>
                     Dosage *
                     <input
                       name="dosage"
                       value={prescriptionForm.dosage}
                       onChange={updatePrescriptionField}
-                      placeholder="e.g. as prescribed"
+                      placeholder="As written on the prescription"
                       required
                     />
                   </label>
-                  
 
-<label>
-  Frequency per day
-  <select
-    name="frequency"
-    value={prescriptionForm.frequency}
-    onChange={updatePrescriptionField}
-    required
-  >
-    <option value="">Select frequency</option>
-    <option value="Once a day">Once a day</option>
-    <option value="Twice a day">Twice a day</option>
-    <option value="Three times a day">Three times a day</option>
-    <option value="Four times a day">Four times a day</option>
-  </select>
-</label>
+                  <label>
+                    Frequency per day
+                    <select
+                      name="frequency"
+                      value={prescriptionForm.frequency}
+                      onChange={updatePrescriptionField}
+                      required
+                    >
+                      <option value="">Select frequency</option>
+                      <option value="Once a day">Once a day</option>
+                      <option value="Twice a day">Twice a day</option>
+                      <option value="Three times a day">Three times a day</option>
+                      <option value="Four times a day">Four times a day</option>
+                    </select>
+                  </label>
 
+                  <label>
+                    Scheduled times
+                    <div className="frequency-times">
+                      {["Morning", "Afternoon", "Evening", "Bedtime"].map((time) => {
+                        const selectedTimes =
+                          prescriptionForm.frequencyTimes || [];
 
+                        const frequencyLimit = {
+                          "Once a day": 1,
+                          "Twice a day": 2,
+                          "Three times a day": 3,
+                          "Four times a day": 4,
+                        }[prescriptionForm.frequency] || 0;
 
-<label>
-  Scheduled times
-  <div className="frequency-times">
-    {["Morning", "Afternoon", "Evening", "Bedtime"].map((time) => {
-      const selectedTimes = prescriptionForm.frequencyTimes || [];
+                        const isSelected = selectedTimes.includes(time);
+                        const limitReached =
+                          selectedTimes.length >= frequencyLimit;
 
-      const frequencyLimit = {
-        "Once a day": 1,
-        "Twice a day": 2,
-        "Three times a day": 3,
-        "Four times a day": 4,
-      }[prescriptionForm.frequency] || 0;
-
-      const isSelected = selectedTimes.includes(time);
-      const limitReached = selectedTimes.length >= frequencyLimit;
-
-      return (
-        <label key={time} className="frequency-option">
-          <input
-            type="checkbox"
-            checked={isSelected}
-            disabled={!isSelected && limitReached}
-            onChange={(event) => {
-              setPrescriptionForm((current) => ({
-                ...current,
-                frequencyTimes: event.target.checked
-                  ? [...(current.frequencyTimes || []), time]
-                  : (current.frequencyTimes || []).filter(
-                      (item) => item !== time
-                    ),
-              }));
-            }}
-          />
-          {time}
-        </label>
-      );
-    })}
-  </div>
-</label>
+                        return (
+                          <label key={time} className="frequency-option">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              disabled={!isSelected && limitReached}
+                              onChange={(event) => {
+                                setPrescriptionForm((current) => ({
+                                  ...current,
+                                  frequencyTimes: event.target.checked
+                                    ? [...(current.frequencyTimes || []), time]
+                                    : (current.frequencyTimes || []).filter(
+                                        (item) => item !== time
+                                      ),
+                                }));
+                              }}
+                            />
+                            {time}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </label>
 
                   <label>
                     Start date
@@ -585,6 +805,7 @@ function App() {
                       onChange={updatePrescriptionField}
                     />
                   </label>
+
                   <label>
                     End date
                     <input
@@ -594,6 +815,7 @@ function App() {
                       onChange={updatePrescriptionField}
                     />
                   </label>
+
                   <label className="full-field">
                     Instructions
                     <textarea
@@ -605,9 +827,22 @@ function App() {
                     />
                   </label>
                 </div>
+
                 <div className="form-actions">
-                  <button type="button" className="secondary-button" onClick={() => setShowPrescriptionForm(false)}>Cancel</button>
-                  <button type="submit" className="primary-button compact">Save prescription</button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setShowPrescriptionForm(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="primary-button compact"
+                    disabled={loading}
+                  >
+                    {loading ? "Saving..." : "Save prescription"}
+                  </button>
                 </div>
               </form>
             </section>
@@ -617,29 +852,36 @@ function App() {
             <section className="content-card patient-selector">
               <div>
                 <h2>Patient overview</h2>
-                <p>Select a patient to view their prescriptions in this session.</p>
+                <p>Choose an assigned patient to view their saved prescriptions.</p>
               </div>
+
               <label className="selector-field">
                 <span>Patient</span>
                 <select
                   value={selectedPatientId}
                   onChange={(event) => setSelectedPatientId(event.target.value)}
                 >
+                  <option value="">Select a patient</option>
                   {patients.map((patient) => (
-                    <option key={patient.id} value={patient.id}>{patient.name}</option>
+                    <option key={patient.id} value={patient.id}>
+                      {patient.name}
+                    </option>
                   ))}
                 </select>
               </label>
-              <div className="patient-summary">
-                <div className="patient-avatar">
-                  {patients.find((p) => p.id === selectedPatientId)?.name.charAt(0)}
+
+              {selectedPatient && (
+                <div className="patient-summary">
+                  <div className="patient-avatar">
+                    {selectedPatient.name.charAt(0)}
+                  </div>
+                  <div>
+                    <strong>{selectedPatient.name}</strong>
+                    <span>{selectedPatient.email}</span>
+                  </div>
+                  <span className="status-pill">Assigned patient</span>
                 </div>
-                <div>
-                  <strong>{patients.find((p) => p.id === selectedPatientId)?.name}</strong>
-                  <span>{patients.find((p) => p.id === selectedPatientId)?.email}</span>
-                </div>
-                <span className="status-pill">Patient record</span>
-              </div>
+              )}
             </section>
           )}
 
@@ -649,10 +891,11 @@ function App() {
                 <h2>{isDoctor ? "Prescription records" : "My prescriptions"}</h2>
                 <p>
                   {isDoctor
-                    ? "Review medication records for the selected patient."
-                    : "Review the medication details entered for your care."}
+                    ? "Saved medication records for the selected patient."
+                    : "Medication details saved by your healthcare team."}
                 </p>
               </div>
+
               {isDoctor && (
                 <input
                   className="search-input"
@@ -664,47 +907,35 @@ function App() {
               )}
             </div>
 
-            {isDoctor ? (
-              <div className="prescription-list">
-                {prescriptions
-                  .filter((prescription) => prescription.patientId === selectedPatientId)
-                  .filter((prescription) =>
-                    `${prescription.medication} ${prescription.patientName}`
-                      .toLowerCase()
-                      .includes(search.toLowerCase())
-                  )
-                  .map((prescription) => (
-                    <PrescriptionCard
-                      key={prescription.id}
-                      prescription={prescription}
-                      doctorView
-                      onStatusChange={changePrescriptionStatus}
-                    />
-                  ))}
-                {prescriptions.filter((p) => p.patientId === selectedPatientId).filter((p) =>
-                  `${p.medication} ${p.patientName}`.toLowerCase().includes(search.toLowerCase())
-                ).length === 0 && (
-                  <EmptyState
-                    title="No prescriptions yet"
-                    description="Add a prescription for this patient to see it here."
-                    action="Add prescription"
-                    onAction={() => setShowPrescriptionForm(true)}
-                  />
-                )}
-              </div>
-            ) : (
-              <div className="prescription-list">
-                {visiblePrescriptions.map((prescription) => (
-                  <PrescriptionCard key={prescription.id} prescription={prescription} />
-                ))}
-                {visiblePrescriptions.length === 0 && (
-                  <EmptyState
-                    title="No prescriptions yet"
-                    description="When your doctor adds a prescription, it will appear here."
-                  />
-                )}
-              </div>
-            )}
+            <div className="prescription-list">
+              {visiblePrescriptions.map((prescription) => (
+                <PrescriptionCard
+                  key={prescription.id}
+                  prescription={prescription}
+                  doctorView={isDoctor}
+                  onStatusChange={isDoctor ? changePrescriptionStatus : undefined}
+                />
+              ))}
+
+              {!workspaceLoading && visiblePrescriptions.length === 0 && (
+                <EmptyState
+                  title="No prescriptions yet"
+                  description={
+                    isDoctor
+                      ? selectedPatientId
+                        ? "Add a prescription for this patient to see it here."
+                        : "Select an assigned patient to view their prescriptions."
+                      : "When your doctor saves a prescription, it will appear here."
+                  }
+                  action={
+                    isDoctor && patients.length > 0
+                      ? "Add prescription"
+                      : undefined
+                  }
+                  onAction={() => setShowPrescriptionForm(true)}
+                />
+              )}
+            </div>
           </section>
 
           {!isDoctor && (
@@ -712,7 +943,10 @@ function App() {
               <div className="reminder-symbol">♡</div>
               <div>
                 <strong>Stay informed about your medications</strong>
-                <p>Follow your doctor's instructions. Contact your healthcare professional if you have questions about a prescription.</p>
+                <p>
+                  Follow your doctor's instructions. Contact your healthcare
+                  professional if you have questions about a prescription.
+                </p>
               </div>
             </section>
           )}
@@ -727,30 +961,57 @@ function App() {
   );
 }
 
-function PrescriptionCard({ prescription, doctorView = false, onStatusChange }) {
+function PrescriptionCard({
+  prescription,
+  doctorView = false,
+  onStatusChange,
+}) {
   return (
     <article className="prescription-card">
       <div className="medication-symbol">✚</div>
+
       <div className="prescription-details">
         <div className="medication-title-row">
           <h3>{prescription.medication}</h3>
-          <span className={`status-pill ${prescription.status === "Completed" ? "completed" : ""}`}>
+          <span
+            className={`status-pill ${
+              prescription.status === "Completed" ? "completed" : ""
+            }`}
+          >
             {prescription.status}
           </span>
         </div>
-        {doctorView && <p className="patient-name">Patient: {prescription.patientName}</p>}
-        <div className="medication-meta">
-          <span><b>Dosage</b>{prescription.dosage}</span>
-          <span><b>Frequency</b>{prescription.frequency || "Not specified"}</span>
-        </div>
-        {prescription.instructions && (
-          <p className="medication-instructions">{prescription.instructions}</p>
-        )}
-        {(prescription.startDate || prescription.endDate) && (
-          <p className="date-range">
-            {prescription.startDate || "Start date not set"} — {prescription.endDate || "End date not set"}
+
+        {doctorView && (
+          <p className="patient-name">
+            Patient: {prescription.patientName}
           </p>
         )}
+
+        <div className="medication-meta">
+          <span>
+            <b>Dosage</b>
+            {prescription.dosage}
+          </span>
+          <span>
+            <b>Frequency</b>
+            {prescription.frequency || "Not specified"}
+          </span>
+        </div>
+
+        {prescription.instructions && (
+          <p className="medication-instructions">
+            {prescription.instructions}
+          </p>
+        )}
+
+        {(prescription.startDate || prescription.endDate) && (
+          <p className="date-range">
+            {prescription.startDate || "Start date not set"} —{" "}
+            {prescription.endDate || "End date not set"}
+          </p>
+        )}
+
         {doctorView && onStatusChange && (
           <div className="record-actions">
             <button
@@ -778,7 +1039,9 @@ function EmptyState({ title, description, action, onAction }) {
       <h3>{title}</h3>
       <p>{description}</p>
       {action && onAction && (
-        <button className="secondary-button" onClick={onAction}>{action}</button>
+        <button className="secondary-button" onClick={onAction}>
+          {action}
+        </button>
       )}
     </div>
   );
