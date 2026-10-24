@@ -1,8 +1,33 @@
-
+import DrugInteractionChecker from "./DrugInteractionChecker";
 import { useEffect, useState } from "react";
 import "./App.css";
 
 const API_URL = "http://localhost:5000/api";
+
+
+const INTERACTION_API_URL = "http://localhost:3001";
+
+async function checkDrugPair(drugA, drugB) {
+  const params = new URLSearchParams({
+    drugA: drugA.trim(),
+    drugB: drugB.trim(),
+  });
+
+  const response = await fetch(
+    `${INTERACTION_API_URL}/api/interactions/check?${params}`
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data.message || "Unable to check drug interactions."
+    );
+  }
+
+  return data;
+}
+
 
 function getSavedUser() {
   try {
@@ -68,6 +93,7 @@ async function apiRequest(path, options = {}) {
 
 function App() {
   const [user, setUser] = useState(getSavedUser);
+  const [activePage, setActivePage] = useState("Dashboard");
   const [mode, setMode] = useState("login");
   const [role, setRole] = useState("patient");
   const [name, setName] = useState("");
@@ -80,21 +106,40 @@ function App() {
 
   const [patients, setPatients] = useState([]);
   const [selectedPatientId, setSelectedPatientId] = useState("");
-  const [prescriptions, setPrescriptions] = useState([]);
+  const [prescriptions, setPrescriptions] = useState([
+  {
+    id: "prescription-001",
+    patientId: "2",
+    patientName: "Shreya",
+    doctorName: "Dr.Ram",
+    medicine: "Miconazole",
+    dosage: "",
+    frequency: "",
+    duration: "",
+    instructions: "Interaction check required.",
+    status: "Active",
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "prescription-002",
+    patientId: "2",
+    patientName: "Shreya",
+    doctorName: "Dr.Ram",
+    medicine: "Tolinase",
+    dosage: "",
+    frequency: "",
+    duration: "",
+    instructions: "Interaction check required.",
+    status: "Active",
+    createdAt: new Date().toISOString()
+  }
+]);
   const [showPrescriptionForm, setShowPrescriptionForm] = useState(false);
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
 
-  const [prescriptionForm, setPrescriptionForm] = useState({
-    medication: "",
-    dosage: "",
-    frequency: "",
-    frequencyTimes: [],
-    instructions: "",
-    startDate: "",
-    endDate: "",
-  });
+  
 
   const isDoctor = user?.role?.toLowerCase() === "doctor";
 
@@ -576,10 +621,38 @@ function App() {
 
         <div className="sidebar-label">WORKSPACE</div>
         <div className="nav-item active"><span>▦</span> Dashboard</div>
-        <div className="nav-item"><span>▤</span> Prescriptions</div>
-        <div className="nav-item"><span>◷</span> Medication schedule</div>
-        <div className="nav-item"><span>♡</span> Care coordination</div>
+        <button
+  type="button"
+  className="nav-item"
+  onClick={() => {
+    document.getElementById("prescriptions-section")
+      ?.scrollIntoView({ behavior: "smooth" });
+  }}
+>
+  <span>▤</span> Prescriptions
+</button>
 
+<button
+  type="button"
+  className="nav-item"
+  onClick={() => {
+    document.getElementById("medication-schedule-section")
+      ?.scrollIntoView({ behavior: "smooth" });
+  }}
+>
+  <span>◷</span> Medication schedule
+</button>
+<div
+  className="nav-item"
+  onClick={() => {
+    document
+      .getElementById("care-coordination-section")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }}
+  style={{ cursor: "pointer" }}
+>
+  Care coordination
+</div>
         <div className="sidebar-bottom">
           <div className="help-card">
             <div className="help-icon">✚</div>
@@ -884,7 +957,10 @@ function App() {
               )}
             </section>
           )}
-
+  <section
+  id="prescriptions-section"
+  className="content-card"
+>
           <section className="content-card">
             <div className="section-heading">
               <div>
@@ -950,6 +1026,268 @@ function App() {
               </div>
             </section>
           )}
+          
+      {/* End of the existing Prescription records section */}
+      </section>
+
+      {/* Add the new sections immediately below */}
+       
+<section
+  id="medication-schedule-section"
+  className="content-card"
+>
+  <div className="section-heading">
+    <div>
+      <h2>Medication schedule</h2>
+      <p>Review your prescribed medications and scheduled times.</p>
+    </div>
+  </div>
+
+  {!isDoctor && visiblePrescriptions.filter(
+    (prescription) => prescription.status === "Active"
+  ).length === 0 && (
+    <EmptyState
+      title="No active medications"
+      description="Your active prescriptions will appear here when your doctor adds them."
+    />
+  )}
+
+  {!isDoctor && visiblePrescriptions
+    .filter((prescription) => prescription.status === "Active")
+    .map((prescription) => {
+      const match = prescription.frequency.match(/\(([^)]+)\)/);
+      const times = match
+        ? match[1].split(",").map((time) => time.trim())
+        : [];
+
+      return (
+        <article
+          className="prescription-card"
+          key={prescription.id}
+        >
+          <div className="medication-symbol">✚</div>
+
+          <div className="prescription-details">
+            <h3>{prescription.medication}</h3>
+
+            <div className="medication-meta">
+              <span>
+                <b>Dosage</b>
+                {prescription.dosage}
+              </span>
+              <span>
+                <b>Frequency</b>
+                {prescription.frequency.split(" (")[0]}
+              </span>
+            </div>
+
+            <p>
+              <strong>Scheduled times</strong>
+            </p>
+
+            {times.length > 0 ? (
+              <div className="frequency-times">
+                {times.map((time) => (
+                  <span
+                    className="status-pill"
+                    key={time}
+                  >
+                    {time}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p>Scheduled times were not specified.</p>
+            )}
+
+            {prescription.instructions && (
+              <p className="medication-instructions">
+                {prescription.instructions}
+              </p>
+            )}
+
+            {(prescription.startDate || prescription.endDate) && (
+              <p className="date-range">
+                {prescription.startDate || "Start date not set"}
+                {" — "}
+                {prescription.endDate || "End date not set"}
+              </p>
+            )}
+          </div>
+        </article>
+      );
+    })}
+
+  {isDoctor && (
+    <p>
+      Select a patient to review their prescriptions in Prescription records.
+    </p>
+  )}
+</section>
+ 
+<DrugInteractionChecker />
+      
+<section id="care-coordination-section" className="content-card">
+  <div className="section-heading">
+    <div>
+      <h2>Care Coordination</h2>
+      <p>
+        Keep patient information and medication details together.
+      </p>
+    </div>
+    <span className="status-pill">Connected</span>
+  </div>
+
+  <div className="patient-summary">
+    <div className="patient-avatar">
+      {(isDoctor
+        ? selectedPatient?.name
+        : user.name || "U"
+      )?.charAt(0).toUpperCase() || "U"}
+    </div>
+
+    <div>
+      <strong>
+        {isDoctor
+          ? selectedPatient?.name || "No patient selected"
+          : user.name}
+      </strong>
+      <span>
+        {isDoctor
+          ? selectedPatient?.email || "Select an assigned patient"
+          : user.email}
+      </span>
+    </div>
+
+    <span className="status-pill">
+      {isDoctor ? "Patient overview" : "Patient account"}
+    </span>
+  </div>
+
+  <div className="stats-grid">
+    <div className="stat-card">
+      <div className="stat-icon lavender">▤</div>
+      <div>
+        <span>Total prescriptions</span>
+        <strong>{visiblePrescriptions.length}</strong>
+      </div>
+      <span className="stat-caption">Saved records</span>
+    </div>
+
+    <div className="stat-card">
+      <div className="stat-icon mint">✓</div>
+      <div>
+        <span>Active medications</span>
+        <strong>
+          {
+            visiblePrescriptions.filter(
+              (p) => p.status === "Active"
+            ).length
+          }
+        </strong>
+      </div>
+      <span className="stat-caption">Currently active</span>
+    </div>
+  </div>
+
+  <div className="section-heading">
+    <div>
+      <h2>Medication care details</h2>
+      <p>Review the saved instructions for each active prescription.</p>
+    </div>
+  </div>
+
+  {visiblePrescriptions.filter(
+    (p) => p.status === "Active"
+  ).length === 0 ? (
+    <EmptyState
+      title="No active medications"
+      description="Active prescription details will appear here when available."
+    />
+  ) : (
+    <div className="prescription-list">
+      {visiblePrescriptions
+        .filter((p) => p.status === "Active")
+        .map((prescription) => (
+          <article
+            className="prescription-card"
+            key={prescription.id}
+          >
+            <div className="medication-symbol">✚</div>
+
+            <div className="prescription-details">
+              <h3>{prescription.medication}</h3>
+
+              <div className="medication-meta">
+                <span>
+                  <b>Dosage</b>
+                  {prescription.dosage || "Not specified"}
+                </span>
+                <span>
+                  <b>Frequency</b>
+                  {prescription.frequency || "Not specified"}
+                </span>
+              </div>
+
+              <p>
+                <strong>Instructions:</strong>{" "}
+                {prescription.instructions || "No instructions recorded."}
+              </p>
+
+              {isDoctor && (
+                <p>
+                  <strong>Patient:</strong>{" "}
+                  {prescription.patientName}
+                </p>
+              )}
+            </div>
+          </article>
+        ))}
+    </div>
+  )}
+
+  <div className="form-actions">
+    <button
+      type="button"
+      className="primary-button compact"
+      onClick={() => {
+        const activeMedications = visiblePrescriptions.filter(
+          (p) => p.status === "Active"
+        );
+
+        const summary = [
+          "MediSync Care Summary",
+          `Account: ${user.name}`,
+          `Role: ${isDoctor ? "Doctor" : "Patient"}`,
+          `Patient: ${
+            isDoctor
+              ? selectedPatient?.name || "None selected"
+              : user.name
+          }`,
+          `Total prescriptions: ${visiblePrescriptions.length}`,
+          "",
+          "Active medications:",
+          ...activeMedications.map(
+            (p) =>
+              `- ${p.medication}; Dosage: ${p.dosage}; Frequency: ${p.frequency}; Instructions: ${p.instructions || "None recorded"}`
+          ),
+        ].join("\n");
+
+        navigator.clipboard.writeText(summary)
+          .then(() => setNotice("Care summary copied successfully."))
+          .catch(() => setNotice("Could not copy the summary. Please check browser clipboard permissions."));
+      }}
+    >
+      Copy care summary
+    </button>
+  </div>
+
+  <p className="muted">
+    Medication updates shown here reflect saved prescription records.
+    This section does not independently verify whether a patient has taken a dose.
+  </p>
+</section>
+
 
           <footer className="dashboard-footer">
             <span>© {new Date().getFullYear()} MediSync</span>
